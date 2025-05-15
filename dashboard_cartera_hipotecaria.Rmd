@@ -1,0 +1,726 @@
+---
+title: "Prediccion Cartera Hipotecaria"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    theme: cosmo
+    source_code: embed
+runtime: shiny
+---
+
+```{r librerias, include=FALSE}
+library(pacman)
+p_load(readxl, gganimate, transformr, tidyr, gifski, dynlm, fpp2, tidyverse, TSstudio, urca, forecast, zoo, tidyverse, fma, cat, expsmooth, dplyr, ggplot2, gt, fGarch, vars, tsibble, lubridate, ggthemes, forecast, urca, tseries, igraph, shiny, shinydashboard, flexdashboard, gridExtra)
+```
+
+
+
+```{r inicio, include=FALSE}
+library(readxl)
+library(dplyr)
+library(lubridate)
+
+# Cargar los datos
+Cartera <- read_excel("cartera_hipotecaria_organizada.xlsx")
+inflacion <- read_excel("Inflacion.xlsx")
+tasas_interes <- read_excel("Tasas de colocacion.xlsx")
+trm <- read_excel("Tasa de cambio Representativa del Mercado (TRM).xlsx")
+desempleo <- read_excel("Tasa de desempleo.xlsx") 
+
+# Renombrar la primera columna como 'fecha'
+names(Cartera)[1] <- "fecha"
+names(inflacion)[1] <- "fecha"
+names(tasas_interes)[1] <- "fecha"
+names(trm)[1] <- "fecha"
+names(desempleo)[1] <- "fecha"
+
+# Convertir fechas correctamente
+Cartera$fecha <- as.Date(Cartera$fecha, origin = "1899-12-30")
+inflacion$fecha <- as.Date(inflacion$fecha, origin = "1899-12-30")
+tasas_interes$fecha <- as.Date(tasas_interes$fecha, format = "%Y/%m/%d")
+trm$fecha <- as.Date(trm$fecha, format = "%Y/%m/%d")
+desempleo$fecha <- as.Date(desempleo$fecha, format = "%Y/%m/%d")
+
+# Renombrar columnas de valor
+colnames(Cartera)[2] <- "cartera"
+colnames(inflacion)[2] <- "inflacion"
+colnames(tasas_interes)[2] <- "tasas_interes"
+colnames(trm)[2] <- "TRM"
+colnames(desempleo)[2] <- "desempleo"
+
+# Redondear al primer día del mes
+Cartera$fecha <- floor_date(Cartera$fecha, "month")
+inflacion$fecha <- floor_date(inflacion$fecha, "month")
+tasas_interes$fecha <- floor_date(tasas_interes$fecha, "month")
+trm$fecha <- floor_date(trm$fecha, "month")
+desempleo$fecha <- floor_date(desempleo$fecha, "month")
+
+Cartera <- Cartera %>%
+  rename(Cartera = 2) %>%
+  mutate(Cartera = as.numeric(Cartera))
+
+# Agrupar y resumir (tomando promedio mensual)
+Cartera_m <- Cartera %>% group_by(fecha) %>% summarise(Cartera = mean(Cartera, na.rm = TRUE))
+inflacion_m <- inflacion %>% group_by(fecha) %>% summarise(inflacion = mean(inflacion, na.rm = TRUE))
+tasas_interes_m <- tasas_interes %>% group_by(fecha) %>% summarise(tasas_interes = mean(tasas_interes, na.rm = TRUE))
+trm_m <- trm %>% group_by(fecha) %>% summarise(TRM = mean(TRM, na.rm = TRUE))
+desempleo_m <- desempleo %>% group_by(fecha) %>% summarise(desempleo = mean(desempleo, na.rm = TRUE))
+
+# Unir todo
+datos_var <- Cartera_m %>%
+  inner_join(inflacion_m, by = "fecha") %>%
+  inner_join(tasas_interes_m, by = "fecha") %>%
+  inner_join(trm_m, by = "fecha") %>%
+  inner_join(desempleo_m, by = "fecha")
+
+```
+
+```{r adf1, include=FALSE}
+
+library(tseries)
+
+# Aplicar prueba ADF a cada variable
+adf.test(datos_var$Cartera)
+adf.test(datos_var$inflacion)
+adf.test(datos_var$tasas_interes)  
+adf.test(datos_var$TRM)
+adf.test(datos_var$desempleo)
+
+```
+
+```{r diff, include=FALSE}
+
+# Recortar la primera fila del dataframe original
+datos_var_recorte <- datos_var[-1, ]
+
+# Calcular diferencias de las series originales (tamaño n-1)
+cartera_diff <- diff(datos_var$Cartera, differences = 1)
+TRM_diff <- diff(datos_var$TRM, differences = 1)
+desempleo_diff <- diff(datos_var$desempleo, differences = 1)
+
+# Agregar las series diferenciadas al dataframe recortado
+datos_var_recorte$Cartera_diff <- cartera_diff
+datos_var_recorte$TRM_diff <- TRM_diff
+datos_var_recorte$desempleo_diff <- desempleo_diff
+
+# Pruebas de Dickey-Fuller aumentadas
+cat("ADF test para Cartera:\n")
+print(adf.test(datos_var_recorte$Cartera_diff))
+
+cat("\nADF test para TRM:\n")
+print(adf.test(datos_var_recorte$TRM_diff))
+
+cat("\nADF test para Desempleo:\n")
+print(adf.test(datos_var_recorte$desempleo_diff))
+
+
+
+```
+
+
+```{r diff2, include=FALSE}
+library(tseries)
+library(vars)
+
+# Paso 1: Recortar primera fila del dataframe original
+datos_var_recorte <- datos_var[-1, ]
+
+# Paso 2: Diferenciar solo las variables que no eran estacionarias
+datos_var_recorte$Cartera_diff <- diff(datos_var$Cartera, differences = 1)
+datos_var_recorte$trm_diff <- diff(datos_var$TRM, differences = 1)  # Asegúrate de que sea "TRM" en mayúsculas
+datos_var_recorte$desempleo_diff <- diff(datos_var$desempleo, differences = 1)
+
+# Paso 3: Pruebas ADF
+cat("ADF test para Cartera:\n")
+print(adf.test(datos_var_recorte$Cartera_diff))
+
+cat("\nADF test para TRM:\n")
+print(adf.test(datos_var_recorte$trm_diff))
+
+cat("\nADF test para Desempleo:\n")
+print(adf.test(datos_var_recorte$desempleo_diff))
+
+# Inflación y tasas de interés ya eran estacionarias
+cat("\nADF test para Inflación:\n")
+print(adf.test(datos_var_recorte$inflacion))
+
+cat("\nADF test para Tasas de interés:\n")
+print(adf.test(datos_var_recorte$tasas_interes))
+
+# Paso 4: Crear nuevo dataframe con series estacionarias
+datos_var_est <- data.frame(
+  cartera = datos_var_recorte$Cartera_diff,
+  trm = datos_var_recorte$trm_diff,
+  desempleo = datos_var_recorte$desempleo_diff,
+  inflacion = datos_var_recorte$inflacion,
+  tasas_interes = datos_var_recorte$tasas_interes
+)
+
+# Paso 5: Seleccionar lag óptimo
+VARselect(datos_var_est, lag.max = 12, type = "const")
+
+```
+
+
+```{r est, include=FALSE}
+# Construcción del nuevo dataset con solo variables estacionarias
+datos_estacionarios <- datos_var_recorte[, c("Cartera_diff", "trm_diff", "desempleo_diff", "inflacion", "tasas_interes")]
+
+# Verificamos clases (todo debería ser numérico)
+sapply(datos_estacionarios, class)
+
+# Ajustamos el modelo VAR con p = 12 como sugerido por AIC y FPE
+modelo_var <- VAR(datos_estacionarios, p = 12, type = "const")
+
+```
+
+
+```{r modelo, include=FALSE}
+modelo_var <- VAR(
+  datos_estacionarios[, c("Cartera_diff", "trm_diff", "desempleo_diff", "inflacion", "tasas_interes")],
+  p = 12,
+  type = "const"
+)
+
+```
+
+
+```{r ir, include=FALSE}
+# Función de impulso-respuesta
+irf_result <- irf(modelo_var, impulse = c("inflacion", "trm_diff", "desempleo_diff", "tasas_interes"),
+                  response = "Cartera_diff", n.ahead = 6, boot = TRUE)
+
+# Mostrar los gráficos de IRF individuales
+plot(irf_result)
+```
+
+
+
+
+```{r pred, include=FALSE}
+# Predecir 6 pasos adelante
+predicciones <- predict(modelo_var, n.ahead = 6, ci = 0.95)
+
+# Predicción de las diferencias de Cartera
+pred_diffs <- predicciones$fcst$Cartera_diff[, "fcst"]
+
+# Valor final real de la serie original en niveles
+ultimo_valor <- tail(datos_var_recorte$Cartera, 1)
+
+# Reconstruir la serie en niveles (valor base + sumas acumuladas)
+pred_niveles <- cumsum(pred_diffs) + ultimo_valor
+
+# Crear las fechas futuras
+ultima_fecha <- tail(datos_var_recorte$fecha, 1)
+fechas_futuras <- seq(from = ultima_fecha %m+% months(1), length.out = 6, by = "month")
+
+# Dataframe final
+pred_df <- data.frame(
+  Fecha = fechas_futuras,
+  Cartera_Predicha = pred_niveles
+)
+
+# Mostrar
+print(pred_df)
+
+```
+
+
+```{r intervalo, include=FALSE}
+# Cargar librerías necesarias
+library(vars)
+library(dplyr)
+library(tidyr)
+# Extraer predicciones y sus intervalos (en diferencias)
+pred_fcst <- predicciones$fcst$Cartera_diff
+
+# Reconstruir predicción en niveles
+pred_niveles <- cumsum(pred_fcst[, "fcst"]) + ultimo_valor
+ic_95_inf <- cumsum(pred_fcst[, "lower"]) + ultimo_valor
+ic_95_sup <- cumsum(pred_fcst[, "upper"]) + ultimo_valor
+
+# Hacer lo mismo con intervalo al 80%
+predicciones_80 <- predict(modelo_var, n.ahead = 6, ci = 0.80)
+pred_fcst_80 <- predicciones_80$fcst$Cartera_diff
+
+ic_80_inf <- cumsum(pred_fcst_80[, "lower"]) + ultimo_valor
+ic_80_sup <- cumsum(pred_fcst_80[, "upper"]) + ultimo_valor
+
+# Crear fechas futuras
+fechas_futuras <- seq(from = ultima_fecha %m+% months(1), length.out = 6, by = "month")
+
+# Unir todo en un solo dataframe
+pred_df <- data.frame(
+  Fecha = fechas_futuras,
+  Cartera_Predicha = pred_niveles,
+  IC_95_inf = ic_95_inf,
+  IC_95_sup = ic_95_sup,
+  IC_80_inf = ic_80_inf,
+  IC_80_sup = ic_80_sup
+)
+
+# Verifica
+print(pred_df)
+
+
+```
+
+```{r irf 1, include=FALSE}
+# Extraer las respuestas a shocks unitarios
+irf_inflacion <- irf_result$irf$inflacion     
+irf_trm       <- irf_result$irf$trm_diff
+irf_desemp    <- irf_result$irf$desempleo_diff
+irf_tasa      <- irf_result$irf$tasas_interes
+```
+
+```{r irf 2, include=FALSE}
+simulacion_cartera <- reactive({
+  shock_infl <- input$shock_inflacion
+  shock_trm  <- input$shock_trm
+  shock_des  <- input$shock_desempleo
+  shock_tasa <- input$shock_tasa
+
+  # Suma ponderada de IRFs (cada una multiplicada por el shock elegido)
+  impacto_total <- shock_infl * irf_inflacion +
+                   shock_trm  * irf_trm +
+                   shock_des  * irf_desemp +
+                   shock_tasa * irf_tasa
+
+  # Cumulative sum para simular niveles en lugar de diferencias
+  impacto_acumulado <- cumsum(impacto_total)
+
+  # Armar data frame
+  data.frame(
+    Fecha = seq.Date(Sys.Date(), by = "month", length.out = length(impacto_acumulado)),
+    Cartera_Simulada = impacto_acumulado
+  )
+})
+
+```
+
+```{r irf 3, include=FALSE}
+# Reactive: construir simulación
+simulacion_cartera <- reactive({
+  shock_infl <- input$shock_inflacion
+  shock_trm  <- input$shock_trm
+  shock_des  <- input$shock_desempleo
+  shock_tasa <- input$shock_tasa
+  
+factor_inflacion <- 0.2   
+factor_desempleo <- -0.1 
+factor_tasa <- -1      
+
+# Aplicar factores a las IRFs
+irf_infl <- irf_infl * factor_inflacion
+irf_desemp <- irf_desemp * factor_desempleo
+irf_tasa <- irf_tasa * factor_tasa
+
+# Multiplicar cada IRF por el tamaño del shock y el factor de ajuste
+impacto_total <- shock_infl * (irf_result$irf$inflacion * factor_inflacion) +
+                 shock_trm  * irf_result$irf$trm_diff +
+                 shock_des  * (irf_result$irf$desempleo_diff * factor_desempleo) +
+                 shock_tasa * (irf_result$irf$tasas_interes * factor_tasa)
+
+  impacto_acumulado <- cumsum(impacto_total)
+  
+ # Sumar los impactos al último valor real
+  proyeccion <- ultimo_valor + cumsum(impacto_total)
+  
+  data.frame(
+    Fecha = seq.Date(Sys.Date(), by = "month", length.out = length(impacto_acumulado)),
+    Cartera_Simulada = impacto_acumulado
+  )
+})
+
+```
+
+# Presentación {data-height=1200}
+
+<h1 style="text-align:center; font-size: 2.5em; margin-top: 60px;">
+  Análisis del Efecto de Variables Macroeconómicas en la Cartera Hipotecaria:<br>
+  <span style="font-size: 1.1em; font-weight: 400;">
+    Un Enfoque Predictivo para la Toma de Decisiones de Inversión
+  </span>
+</h1>
+
+<h3 style="text-align:center; font-weight:normal; margin-top: 40px;">
+  <b>Presentado por:</b> Ana María Llinás y Carlos Chapman<br>
+  <b>Presentado a:</b> Carlos Yanes<br>
+  <b>Fecha:</b> 16 de mayo del 2025
+</h3>
+
+<div style="display: flex; justify-content: center; align-items: center; margin-top: 50px;">
+  <img src="Logo Econometria 2.jpeg" style="width: 800px; max-width: 95vw; height: auto;">
+</div>
+
+
+
+
+# Gráfico Interactivo y Estadisticos
+
+Row {data-height=900}
+-----------------------------------------------------------------------
+
+###
+
+```{r grafico32424, include=FALSE}
+library(plotly)
+library(dplyr)
+library(zoo)
+library(htmltools)
+library(lubridate)
+
+datos_completos <- bind_rows(
+  Cartera_m %>% select(Fecha = fecha, Valor = Cartera),
+  pred_df %>% select(Fecha, Valor = Cartera_Predicha)
+)
+
+min_val <- min(datos_completos$Valor, na.rm = TRUE)
+min_fecha <- datos_completos$Fecha[which.min(datos_completos$Valor)]
+max_val <- max(datos_completos$Valor, na.rm = TRUE)
+max_fecha <- datos_completos$Fecha[which.max(datos_completos$Valor)]
+avg_val <- mean(datos_completos$Valor, na.rm = TRUE)
+ult_val <- tail(pred_df$Cartera_Predicha, 1)
+
+modelo_loess <- loess(Valor ~ as.numeric(Fecha), data = datos_completos, span = 0.2)
+tendencia <- predict(modelo_loess, newdata = datos_completos)
+
+fig_general <- plot_ly() %>%
+  add_lines(data = Cartera_m, x = ~fecha, y = ~Cartera,
+            name = "Cartera Real", line = list(color = "black")) %>%
+  add_lines(data = pred_df, x = ~Fecha, y = ~Cartera_Predicha,
+            name = "Predicción", line = list(dash = 'dash', color = "#1f77b4")) %>%
+  add_ribbons(data = pred_df, x = ~Fecha, ymin = ~IC_95_inf, ymax = ~IC_95_sup,
+              name = "IC 95%", fillcolor = 'rgba(31, 119, 180, 0.3)',
+              line = list(color = 'transparent')) %>%
+  add_ribbons(data = pred_df, x = ~Fecha, ymin = ~IC_80_inf, ymax = ~IC_80_sup,
+              name = "IC 80%", fillcolor = 'rgba(255, 140, 0, 0.3)',
+              line = list(color = 'transparent')) %>%
+  add_lines(x = datos_completos$Fecha, y = tendencia,
+            name = "Tendencia (loess)", line = list(dash = 'dot', color = 'red')) %>%
+  layout(title = "📈 Proyección de Cartera Hipotecaria",
+         xaxis = list(title = "Fecha", rangeslider = list(type = "date")),
+         yaxis = list(title = "Cartera (Billones COP)"))
+
+fig_general
+```
+
+
+
+```{r grafico_general, echo=FALSE}
+library(highcharter)
+library(dplyr)
+library(lubridate)
+library(xts)
+
+# Último punto real
+ultimo_real <- Cartera_m %>%
+  filter(fecha == max(fecha)) %>%
+  transmute(Fecha = fecha, Valor = Cartera,
+            IC_95_inf = Cartera, IC_95_sup = Cartera,
+            IC_80_inf = Cartera, IC_80_sup = Cartera)
+
+# Insertar al inicio de la predicción
+pred_df_continuo <- bind_rows(ultimo_real, pred_df)
+
+# Unir datos reales con predicción extendida
+datos_completos <- bind_rows(
+  Cartera_m %>% select(Fecha = fecha, Valor = Cartera),
+  pred_df_continuo %>% select(Fecha, Valor = Cartera_Predicha)
+)
+
+# Tendencia loess
+modelo_loess <- loess(Valor ~ as.numeric(Fecha), data = datos_completos, span = 0.2)
+tendencia <- predict(modelo_loess, newdata = datos_completos)
+
+# xts
+serie_real <- xts(Cartera_m$Cartera, order.by = Cartera_m$fecha)
+serie_pred <- xts(pred_df_continuo$Valor, order.by = pred_df_continuo$Fecha)
+tendencia_xts <- xts(tendencia, order.by = datos_completos$Fecha)
+
+# Convertir fechas a formato Unix ms
+fecha_num <- as.numeric(as.POSIXct(pred_df_continuo$Fecha)) * 1000
+
+# Bandas de confianza corregidas
+ic_95_data <- lapply(seq_along(fecha_num), function(i){
+  list(fecha_num[i], pred_df_continuo$IC_95_inf[i], pred_df_continuo$IC_95_sup[i])
+})
+
+ic_80_data <- lapply(seq_along(fecha_num), function(i){
+  list(fecha_num[i], pred_df_continuo$IC_80_inf[i], pred_df_continuo$IC_80_sup[i])
+})
+
+# Gráfico corregido
+highchart(type = "stock") %>%
+  hc_title(text = "📈 Cartera Hipotecaria: Real vs Predicción con IC") %>%
+
+  # Serie real
+  hc_add_series(serie_real, name = "Cartera Real", color = "#000000") %>%
+
+  # Predicción continua
+  hc_add_series(serie_pred, name = "Predicción", color = "#1f77b4", dashStyle = "ShortDash") %>%
+
+  # Intervalos de confianza
+  hc_add_series_list(list(
+    list(
+      type = "arearange",
+      name = "IC 95%",
+      data = ic_95_data,
+      color = hex_to_rgba("#1f77b4", 0.2),
+      lineWidth = 0,
+      linkedTo = ":previous",
+      zIndex = 0,
+      showInLegend = TRUE
+    ),
+    list(
+      type = "arearange",
+      name = "IC 80%",
+      data = ic_80_data,
+      color = hex_to_rgba("#ff8c00", 0.2),
+      lineWidth = 0,
+      linkedTo = ":previous",
+      zIndex = 1,
+      showInLegend = TRUE
+    )
+  )) %>%
+
+  # Tendencia loess
+  hc_add_series(tendencia_xts, name = "Tendencia (LOESS)", color = "red", dashStyle = "Dot") %>%
+
+  # Controles
+  hc_rangeSelector(enabled = TRUE) %>%
+  hc_xAxis(type = "datetime") %>%
+  hc_tooltip(shared = TRUE, crosshairs = TRUE, valueDecimals = 2) %>%
+  hc_legend(enabled = TRUE)
+
+```
+
+
+Row {data-height=200}
+-----------------------------------------------------------------------
+### Estadísticas
+
+```{r estadisticas, echo=FALSE}
+
+stats <- tags$div(style = "display: flex; justify-content: space-around; margin-top: 10px;",
+  tags$div(style = "background-color:#1f77b4; color:white; padding:10px; border-radius:10px;",
+           HTML(paste0("<b>🔻 Mínimo:</b><br>", round(min_val, 2), "<br><small>", format(min_fecha, "%b %Y"), "</small>"))),
+  tags$div(style = "background-color:#ff7f0e; color:white; padding:10px; border-radius:10px;",
+           HTML(paste0("<b>🔺 Máximo:</b><br>", round(max_val, 2), "<br><small>", format(max_fecha, "%b %Y"), "</small>"))),
+  tags$div(style = "background-color:#2ca02c; color:white; padding:10px; border-radius:10px;",
+           HTML(paste0("<b>📊 Promedio:</b><br>", round(avg_val, 2)))),
+  tags$div(style = "background-color:#d62728; color:white; padding:10px; border-radius:10px;",
+           HTML(paste0("<b>📌 Última Predicción:</b><br>", round(ult_val, 2))))
+)
+
+browsable(tagList(stats))
+```
+
+
+-------------------------------------
+
+# Predicción Detallada
+
+
+
+```{r zoom_prediccion, echo=FALSE}
+# Filtrar últimos 25 puntos reales
+datos_zoom <- datos_completos %>% filter(row_number() >= (n() - 25))
+
+# Ajustar el modelo LOESS sobre los datos reales
+modelo_loess_zoom <- loess(Valor ~ as.numeric(Fecha), data = datos_zoom, span = 0.3)
+tendencia_zoom <- predict(modelo_loess_zoom, newdata = datos_zoom)
+
+# Corregir predicción: agregar último punto real como inicio
+ultimo_real <- datos_zoom %>% filter(Fecha == max(Cartera_m$fecha)) %>%
+  transmute(Fecha, Cartera_Predicha = Valor,
+            IC_95_inf = Valor, IC_95_sup = Valor,
+            IC_80_inf = Valor, IC_80_sup = Valor)
+
+# Unir este punto a la predicción original
+pred_df_continuo <- bind_rows(ultimo_real, pred_df)
+
+# Graficar con plotly
+fig_zoom <- plot_ly() %>%
+  add_lines(data = datos_zoom %>% filter(Fecha <= max(Cartera_m$fecha)),
+            x = ~Fecha, y = ~Valor, name = "Cartera Real", line = list(color = "black")) %>%
+  add_lines(data = pred_df_continuo, x = ~Fecha, y = ~Cartera_Predicha,
+            name = "Predicción", line = list(dash = 'dash', color = "#1f77b4")) %>%
+  add_ribbons(data = pred_df_continuo, x = ~Fecha, ymin = ~IC_95_inf, ymax = ~IC_95_sup,
+              name = "IC 95%", fillcolor = 'rgba(31, 119, 180, 0.3)',
+              line = list(color = 'transparent')) %>%
+  add_ribbons(data = pred_df_continuo, x = ~Fecha, ymin = ~IC_80_inf, ymax = ~IC_80_sup,
+              name = "IC 80%", fillcolor = 'rgba(255, 140, 0, 0.3)',
+              line = list(color = 'transparent')) %>%
+  add_lines(x = datos_zoom$Fecha, y = tendencia_zoom,
+            name = "Tendencia (loess)", line = list(dash = 'dot', color = 'red')) %>%
+  layout(title = "🔍 Zoom Últimos Años",
+         xaxis = list(title = "Fecha"), yaxis = list(title = "Cartera"))
+
+fig_zoom
+
+```
+
+# Escenario con Shocks
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+### Parámetros con Sliders
+
+```{r, echo=FALSE}
+# Panel de control con sliders
+      sliderInput("shock_inflacion", "Shock Inflación (%):" , min = -2, max = 2, value = 0, step = 0.1)
+      sliderInput("shock_trm", "Shock TRM:", min = -500, max = 500, value = 0, step = 10)
+      sliderInput("shock_desempleo", "Shock Desempleo (%):", min = -2, max = 2, value = 0, step = 0.1)
+      sliderInput("shock_tasa", "Shock Tasa de Interés (%):", min = -2, max = 2, value = 0, step = 0.1)
+```
+
+Column 
+-----------------------------------------------------------------------
+### Gráfico de Prediccion de Escenario con Shocks
+
+```{r, context="server"}
+
+output$proyeccion_shocks <- renderHighchart({
+  req(irf_result)
+
+  # Leer shocks directos de sliders
+  shock_infl <- input$shock_inflacion
+  shock_trm <- input$shock_trm
+  shock_desemp <- input$shock_desempleo
+  shock_tasa <- input$shock_tasa
+
+  # Valor base cartera
+  ultimo_valor_cartera <- 113.627
+
+
+  # Factores Calculados
+  factor_inflacion <- 2.12     
+  factor_trm <- 0.23             
+  factor_desempleo <- 3.35    
+  factor_tasa <- 43.22
+
+  # IRFs
+  irf_infl <- irf_result$irf$inflacion[, 1]
+  irf_trm <- irf_result$irf$trm_diff[, 1]
+  irf_desemp <- irf_result$irf$desempleo_diff[, 1]
+  irf_tasa <- irf_result$irf$tasas_interes[, 1]
+
+  # Impacto total con factores y shocks directos
+  impacto_total <- (shock_infl * factor_inflacion) * irf_infl +
+                   (shock_trm * factor_trm) * irf_trm +
+                   (shock_desemp * factor_desempleo) * irf_desemp +
+                   (shock_tasa * factor_tasa) * irf_tasa
+
+  # Construir proyección acumulada
+  proyeccion <- ultimo_valor_cartera + cumsum(impacto_total)
+
+  # Fechas para eje X
+  fechas_futuras <- seq(from = as.Date("2024-12-01"), length.out = length(proyeccion), by = "month")
+  pred_xts <- xts::xts(proyeccion, order.by = fechas_futuras)
+
+  # Gráfico con highcharter
+  highchart(type = "stock") %>%
+    hc_title(text = "📉 Proyección de la cartera según shocks") %>%
+    hc_add_series(pred_xts, name = "Proyección", color = "#D55E00") %>%
+    hc_xAxis(type = "datetime") %>%
+    hc_tooltip(shared = TRUE, valueDecimals = 2)
+})
+
+
+highchartOutput("proyeccion_shocks", height = "400px")
+```
+
+# Escenario con Valores Esperados
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+### Parámetros con Sliders
+
+```{r, echo=FALSE}
+
+
+
+ sliderInput("esperado_inflacion", "Inflación esperada (%)", value = 5.2, min = 0, max = 10, step = 0.1)
+ sliderInput("esperado_trm", "TRM esperada (COP)", value = 4300, min = 3000, max = 5000, step = 10)
+ sliderInput("esperado_desempleo", "Desempleo esperado (%)", value = 11.6, min = 5, max = 20, step = 0.1)
+ sliderInput("esperado_tasa", "Tasa de interés esperada (%)", value = 14.9, min = 5, max = 20, step = 0.1)
+
+```
+
+Column 
+-----------------------------------------------------------------------
+### Gráfico de Prediccion de Escenario con Valores Esperados
+
+```{r, context="server"}
+
+output$proyeccion_esperada <- renderHighchart({
+  req(irf_result)
+
+  # Leer valores esperados de los inputs (sliders)
+  infl_esp <- input$esperado_inflacion
+  trm_esp <- input$esperado_trm
+  desemp_esp <- input$esperado_desempleo
+  tasa_esp <- input$esperado_tasa
+
+  # Valores reales anteriores (base)
+  ultimo_inflacion <- 5.22
+  ultimo_trm <- 4307.567
+  ultimo_desempleo <- 11.64
+  ultima_tasa <- 14.938
+  ultimo_valor_cartera <- 113.627
+
+  # Cálculo de shocks
+  shock_infl <- infl_esp - ultimo_inflacion
+  shock_trm <- trm_esp - ultimo_trm
+  shock_desemp <- desemp_esp - ultimo_desempleo
+  shock_tasa <- tasa_esp - ultima_tasa
+
+  # Factores Calculados
+  factor_inflacion <- 2.12     
+  factor_trm <- 0.23             
+  factor_desempleo <- 3.35    
+  factor_tasa <- 43.22
+
+  # IRFs (coeficientes impulso respuesta)
+  irf_infl <- irf_result$irf$inflacion[, 1]
+  irf_trm <- irf_result$irf$trm_diff[, 1]
+  irf_desemp <- irf_result$irf$desempleo_diff[, 1]
+  irf_tasa <- irf_result$irf$tasas_interes[, 1]
+
+  # Impacto total con factores
+  impacto_total <- (shock_infl * factor_inflacion) * irf_infl +
+                   (shock_trm * factor_trm) * irf_trm +
+                   (shock_desemp * factor_desempleo) * irf_desemp +
+                   (shock_tasa * factor_tasa) * irf_tasa
+
+  # Construir proyección acumulada
+  proyeccion <- ultimo_valor_cartera + cumsum(impacto_total)
+
+  # Fechas para eje x
+  fechas_futuras <- seq(from = as.Date("2024-12-01"), length.out = length(proyeccion), by = "month")
+  pred_xts <- xts::xts(proyeccion, order.by = fechas_futuras)
+
+  # Plot con highcharter
+  highchart(type = "stock") %>%
+    hc_title(text = "📉 Proyección de la cartera según valores esperados") %>%
+    hc_add_series(pred_xts, name = "Proyección", color = "#0072B2") %>%
+    hc_xAxis(type = "datetime") %>%
+    hc_tooltip(shared = TRUE, valueDecimals = 2)
+})
+
+highchartOutput("proyeccion_esperada", height = "400px")
+
+```
+
+# Despedida
+
+<h1 style="text-align:center; font-size: 3em; color: #e63946; margin-top: 80px; text-shadow: 2px 2px 8px #f1faee;">
+  ¡¡GRACIAS POR SU ATENCIÓN!!
+</h1>
+
+<div style="display: flex; justify-content: center; align-items: center; margin-top: 60px;">
+  <img src="Logo Econometria 4.jpeg" style="width: 700px; max-width: 95vw; height: auto; border: 5px solid #457b9d; border-radius: 18px; box-shadow: 0 8px 32px #1d3557;">
+</div>
+
