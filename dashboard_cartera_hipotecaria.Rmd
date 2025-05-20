@@ -5,9 +5,10 @@ output:
     orientation: rows
     vertical_layout: fill
     theme: cosmo
-    source_code: embed
 runtime: shiny
 ---
+
+
 
 ```{r librerias, include=FALSE}
 library(pacman)
@@ -335,6 +336,12 @@ impacto_total <- shock_infl * (irf_result$irf$inflacion * factor_inflacion) +
 
 ```
 
+```{r}
+sds <- apply(datos_estacionarios[, c("trm_diff", "desempleo_diff", "inflacion", "tasas_interes")], 2, sd)
+```
+
+
+
 # Presentación {data-height=1200}
 
 <h1 style="text-align:center; font-size: 2.5em; margin-top: 60px;">
@@ -569,11 +576,13 @@ Column {.sidebar}
 ### Parámetros con Sliders
 
 ```{r, echo=FALSE}
-# Panel de control con sliders
-      sliderInput("shock_inflacion", "Shock Inflación (%):" , min = -2, max = 2, value = 0, step = 0.1)
-      sliderInput("shock_trm", "Shock TRM:", min = -500, max = 500, value = 0, step = 10)
-      sliderInput("shock_desempleo", "Shock Desempleo (%):", min = -2, max = 2, value = 0, step = 0.1)
-      sliderInput("shock_tasa", "Shock Tasa de Interés (%):", min = -2, max = 2, value = 0, step = 0.1)
+# Panel de control con sliders (% visibles, valores internos en decimales)
+sliderInput("shock_inflacion", "Shock Inflación (% de la desviación estándar)", min = -2, max = 2, value = 0, step = 0.1)
+sliderInput("shock_trm", "Shock TRM (% de la desviación estándar)", min = -2, max = 2, value = 0, step = 0.1)
+sliderInput("shock_desempleo", "Shock Desempleo (% de la desviación estándar)",  min = -2, max = 2, value = 0, step = 0.1)
+sliderInput("shock_tasa", "Shock Tasa de Interés (% de la desviación estándar)",  min = -2, max = 2, value = 0, step = 0.1)
+
+
 ```
 
 Column 
@@ -585,21 +594,20 @@ Column
 output$proyeccion_shocks <- renderHighchart({
   req(irf_result)
 
-  # Leer shocks directos de sliders
-  shock_infl <- input$shock_inflacion
-  shock_trm <- input$shock_trm
-  shock_desemp <- input$shock_desempleo
-  shock_tasa <- input$shock_tasa
+  # Leer los shocks como porcentaje de desviación estándar
+  shock_infl <- input$shock_inflacion 
+  shock_trm <- input$shock_trm 
+  shock_desemp <- input$shock_desempleo 
+  shock_tasa <- input$shock_tasa 
+
+  # Desviaciones estándar históricas (sustituye con valores reales)
+  sd_infl <- sd(datos_var_recorte$inflacion)
+  sd_trm <- sd(datos_var_recorte$trm_diff)
+  sd_desemp <- sd(datos_var_recorte$desempleo_diff)
+  sd_tasa <- sd(datos_var_recorte$tasas_interes)
 
   # Valor base cartera
   ultimo_valor_cartera <- 113.627
-
-
-  # Factores Calculados
-  factor_inflacion <- 2.12     
-  factor_trm <- 0.23             
-  factor_desempleo <- 3.35    
-  factor_tasa <- 43.22
 
   # IRFs
   irf_infl <- irf_result$irf$inflacion[, 1]
@@ -607,29 +615,30 @@ output$proyeccion_shocks <- renderHighchart({
   irf_desemp <- irf_result$irf$desempleo_diff[, 1]
   irf_tasa <- irf_result$irf$tasas_interes[, 1]
 
-  # Impacto total con factores y shocks directos
-  impacto_total <- (shock_infl * factor_inflacion) * irf_infl +
-                   (shock_trm * factor_trm) * irf_trm +
-                   (shock_desemp * factor_desempleo) * irf_desemp +
-                   (shock_tasa * factor_tasa) * irf_tasa
+  # Aplicar shocks en términos de desviación estándar
+  impacto_total <- (shock_infl * sd_infl) * irf_infl +
+                   (shock_trm * sd_trm) * irf_trm +
+                   (shock_desemp * sd_desemp) * irf_desemp +
+                   (shock_tasa * sd_tasa) * irf_tasa
 
-  # Construir proyección acumulada
+  # Proyección acumulada
   proyeccion <- ultimo_valor_cartera + cumsum(impacto_total)
 
   # Fechas para eje X
   fechas_futuras <- seq(from = as.Date("2024-12-01"), length.out = length(proyeccion), by = "month")
   pred_xts <- xts::xts(proyeccion, order.by = fechas_futuras)
 
-  # Gráfico con highcharter
+  # Gráfico
   highchart(type = "stock") %>%
-    hc_title(text = "📉 Proyección de la cartera según shocks") %>%
+    hc_title(text = "📉 Proyección de la cartera según shocks (en desviaciones estándar)") %>%
     hc_add_series(pred_xts, name = "Proyección", color = "#D55E00") %>%
     hc_xAxis(type = "datetime") %>%
-    hc_tooltip(shared = TRUE, valueDecimals = 2)
+    hc_tooltip(shared = TRUE, valueDecimals = 2) %>%
+    hc_yAxis(labels = list(format = "{value}"))
 })
 
-
 highchartOutput("proyeccion_shocks", height = "400px")
+
 ```
 
 # Escenario con Valores Esperados
@@ -640,13 +649,11 @@ Column {.sidebar}
 
 ```{r, echo=FALSE}
 
-
-
  sliderInput("esperado_inflacion", "Inflación esperada (%)", value = 5.2, min = 0, max = 10, step = 0.1)
  sliderInput("esperado_trm", "TRM esperada (COP)", value = 4300, min = 3000, max = 5000, step = 10)
  sliderInput("esperado_desempleo", "Desempleo esperado (%)", value = 11.6, min = 5, max = 20, step = 0.1)
  sliderInput("esperado_tasa", "Tasa de interés esperada (%)", value = 14.9, min = 5, max = 20, step = 0.1)
-
+ 
 ```
 
 Column 
@@ -658,56 +665,53 @@ Column
 output$proyeccion_esperada <- renderHighchart({
   req(irf_result)
 
-  # Leer valores esperados de los inputs (sliders)
+  # 1. Sliders del usuario
   infl_esp <- input$esperado_inflacion
   trm_esp <- input$esperado_trm
   desemp_esp <- input$esperado_desempleo
   tasa_esp <- input$esperado_tasa
 
-  # Valores reales anteriores (base)
+  # 2. Últimos valores reales
   ultimo_inflacion <- 5.22
   ultimo_trm <- 4307.567
   ultimo_desempleo <- 11.64
   ultima_tasa <- 14.938
   ultimo_valor_cartera <- 113.627
 
-  # Cálculo de shocks
+  # 3. Calcular shocks
   shock_infl <- infl_esp - ultimo_inflacion
   shock_trm <- trm_esp - ultimo_trm
   shock_desemp <- desemp_esp - ultimo_desempleo
   shock_tasa <- tasa_esp - ultima_tasa
 
-  # Factores Calculados
-  factor_inflacion <- 2.12     
-  factor_trm <- 0.23             
-  factor_desempleo <- 3.35    
-  factor_tasa <- 43.22
-
-  # IRFs (coeficientes impulso respuesta)
+  # 4. IRFs
   irf_infl <- irf_result$irf$inflacion[, 1]
   irf_trm <- irf_result$irf$trm_diff[, 1]
   irf_desemp <- irf_result$irf$desempleo_diff[, 1]
   irf_tasa <- irf_result$irf$tasas_interes[, 1]
 
-  # Impacto total con factores
-  impacto_total <- (shock_infl * factor_inflacion) * irf_infl +
-                   (shock_trm * factor_trm) * irf_trm +
-                   (shock_desemp * factor_desempleo) * irf_desemp +
-                   (shock_tasa * factor_tasa) * irf_tasa
+  # 5. Impacto individual: multiplicar cada trayectoría IRF por su respectivo shock
+  impacto_infl <- shock_infl * irf_infl
+  impacto_trm <- shock_trm * irf_trm
+  impacto_desemp <- shock_desemp * irf_desemp
+  impacto_tasa <- shock_tasa * irf_tasa
 
-  # Construir proyección acumulada
+  # 6. Proyección acumulada
+  impacto_total <- impacto_infl + impacto_trm + impacto_desemp + impacto_tasa
   proyeccion <- ultimo_valor_cartera + cumsum(impacto_total)
 
-  # Fechas para eje x
+  # 7. Fechas proyectadas
   fechas_futuras <- seq(from = as.Date("2024-12-01"), length.out = length(proyeccion), by = "month")
   pred_xts <- xts::xts(proyeccion, order.by = fechas_futuras)
 
-  # Plot con highcharter
-  highchart(type = "stock") %>%
-    hc_title(text = "📉 Proyección de la cartera según valores esperados") %>%
-    hc_add_series(pred_xts, name = "Proyección", color = "#0072B2") %>%
-    hc_xAxis(type = "datetime") %>%
-    hc_tooltip(shared = TRUE, valueDecimals = 2)
+  # 8. Gráfico interactivo
+highchart(type = "stock") %>%
+  hc_title(text = "📉 Proyección de la cartera según shocks") %>%
+  hc_add_series(pred_xts, name = "Proyección", color = "#D55E00") %>%
+  hc_xAxis(type = "datetime") %>%
+  hc_yAxis(labels = list(format = "{value}")) %>%  # Aquí quitamos “B COP”
+  hc_tooltip(shared = TRUE, valueDecimals = 2)
+
 })
 
 highchartOutput("proyeccion_esperada", height = "400px")
